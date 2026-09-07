@@ -118,7 +118,15 @@ jobs:
         run: docker compose down
 
   deny:
-    uses: tempoxyz/ci/.github/workflows/deny.yml@09f481293feb726bcd5c94853063b224a9b2ff24
+    uses: tempoxyz/gh-actions/.github/workflows/rust-lint.yml@3a37d720685503bb084ba723ee981a6c1b120360
+    with:
+      run-clippy: false
+      run-fmt: false
+      run-typos: false
+      run-deny: true
+      deny-rust-toolchain: nightly
+    secrets:
+      STEP_SECURITY_API_KEY: ${{ secrets.STEP_SECURITY_API_KEY }}
     permissions:
       contents: read
 
