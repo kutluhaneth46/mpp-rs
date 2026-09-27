@@ -236,14 +236,33 @@ impl Store for FileStore {
             let serialized = serde_json::to_string_pretty(&value)
                 .map_err(|e| StoreError::Serialization(e.to_string()))?;
             // `create_new` is an atomic O_EXCL create: fails if the file exists.
+            // Claim the key with O_EXCL, write contents via temp+rename, and remove the
+            // claim file if the write fails so the key is never left poisoned.
             match std::fs::OpenOptions::new()
                 .write(true)
                 .create_new(true)
                 .open(&path)
             {
-                Ok(mut f) => {
-                    f.write_all(serialized.as_bytes())
-                        .map_err(|e| StoreError::Internal(e.to_string()))?;
+                Ok(_claim) => {
+                    drop(_claim);
+                    let tmp_path = path.with_extension(format!("tmp-{}", std::process::id()));
+                    let write_result = (|| -> Result<(), StoreError> {
+                        let mut f = std::fs::File::create(&tmp_path)
+                            .map_err(|e| StoreError::Internal(e.to_string()))?;
+                        f.write_all(serialized.as_bytes())
+                            .map_err(|e| StoreError::Internal(e.to_string()))?;
+                        f.sync_all()
+                            .map_err(|e| StoreError::Internal(e.to_string()))?;
+                        drop(f);
+                        std::fs::rename(&tmp_path, &path)
+                            .map_err(|e| StoreError::Internal(e.to_string()))?;
+                        Ok(())
+                    })();
+                    if let Err(e) = write_result {
+                        let _ = std::fs::remove_file(&tmp_path);
+                        let _ = std::fs::remove_file(&path);
+                        return Err(e);
+                    }
                     Ok(true)
                 }
                 Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => Ok(false),
