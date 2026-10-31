@@ -34,9 +34,32 @@ pub fn compute_json<T: serde::Serialize>(body: &T) -> BodyDigest {
     compute(&json)
 }
 
+/// Normalize a digest to the bare `sha-256={base64}` form used by [`compute`].
+///
+/// Accepts both the bare form and the RFC 9530 byte sequence
+/// (`sha-256=:<base64>:`), matching challenge header validation.
+fn normalize_digest(digest: &str) -> Option<String> {
+    let value = digest.strip_prefix("sha-256=")?;
+    let value = value
+        .strip_prefix(':')
+        .and_then(|value| value.strip_suffix(':'))
+        .unwrap_or(value);
+    if value.is_empty() {
+        return None;
+    }
+    Some(format!("sha-256={value}"))
+}
+
 /// Verifies that a digest matches the given body bytes.
+///
+/// `digest` may be either the bare `sha-256={base64}` form produced by
+/// [`compute`] or the RFC 9530 byte sequence `sha-256=:<base64>:`. Challenge
+/// parsing already accepts both; verification must too.
 pub fn verify(digest: &str, body: &[u8]) -> bool {
-    crate::protocol::core::challenge::constant_time_eq(&compute(body), digest)
+    let Some(normalized) = normalize_digest(digest) else {
+        return false;
+    };
+    crate::protocol::core::challenge::constant_time_eq(&compute(body), &normalized)
 }
 
 #[cfg(test)]
@@ -88,5 +111,25 @@ mod tests {
         let digest = compute(b"");
         assert!(verify(&digest, b""));
         assert!(!verify(&digest, b"x"));
+    }
+
+    #[test]
+    fn test_verify_accepts_rfc9530_byte_sequence() {
+        let body = b"hello";
+        let bare = compute(body);
+        let b64 = bare.strip_prefix("sha-256=").expect("bare digest prefix");
+        let wrapped = format!("sha-256=:{b64}:");
+
+        assert!(verify(&bare, body));
+        assert!(verify(&wrapped, body));
+        assert!(!verify(&wrapped, b"world"));
+    }
+
+    #[test]
+    fn test_verify_rejects_empty_and_non_sha256() {
+        assert!(!verify("", b"hello"));
+        assert!(!verify("sha-256=", b"hello"));
+        assert!(!verify("sha-256=::", b"hello"));
+        assert!(!verify("sha-512=abc", b"hello"));
     }
 }
